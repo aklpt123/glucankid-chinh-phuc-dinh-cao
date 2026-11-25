@@ -1,33 +1,50 @@
-# Hướng dẫn gắn subdomain riêng cho trang GitHub Pages
+# Hướng dẫn gắn subdomain `minigame.glucankid.vn` cho trang GitHub Pages
 
-Trang hiện đang chạy tại: <https://aklpt123.github.io/glucankid-chinh-phuc-dinh-cao/>
+- Trang minigame hiện đang chạy tại: <https://aklpt123.github.io/glucankid-chinh-phuc-dinh-cao/>
+- Địa chỉ mới muốn dùng: **`minigame.glucankid.vn`**
+- Trang chính `glucankid.vn` giữ nguyên, không bị ảnh hưởng.
 
-Mục tiêu: truy cập trang bằng subdomain của tên miền đã mua ở Tenten, ví dụ `chinhphuc.glucankid.vn`.
-Trong hướng dẫn này, thay `chinhphuc.glucankid.vn` bằng subdomain bạn muốn dùng.
-
-Khi xong, trang sẽ hiển thị trực tiếp trên subdomain (không phải chuyển trang), và link `aklpt123.github.io/...` cũ sẽ tự chuyển về subdomain mới.
+Khi xong, minigame sẽ hiển thị trực tiếp trên `minigame.glucankid.vn` (không phải chuyển trang), và link `aklpt123.github.io/...` cũ sẽ tự chuyển về địa chỉ mới.
 
 ---
 
-## Bước 1 — Thêm bản ghi DNS trên Tenten
+## Bước 1 — Thêm bản ghi DNS cho `minigame`
 
-1. Đăng nhập <https://id.tenten.vn> → **Quản lý dịch vụ** → danh sách tên miền.
-2. Ở dòng tên miền muốn dùng, bấm biểu tượng **DNS** (hình tròn xanh) để mở trang quản lý bản ghi.
-3. Thêm một bản ghi mới:
+### 1.1. Xác định nơi quản lý DNS của `glucankid.vn`
 
-   | Loại    | Host / Tên  | Giá trị              | TTL                  |
-   |---------|-------------|----------------------|----------------------|
-   | `CNAME` | `chinhphuc` | `aklpt123.github.io` | 3600 (hoặc mặc định) |
+Tại thời điểm viết hướng dẫn, `glucankid.vn` đang dùng nameserver:
 
-   - Ô **Host** chỉ ghi phần subdomain (`chinhphuc`), không ghi cả `chinhphuc.glucankid.vn`.
-   - Ô **Giá trị** chỉ ghi `aklpt123.github.io`: không có `https://`, không có tên repo phía sau.
+```
+ns1.secureweb.vn
+ns2.secureweb.vn
+ns3.secureweb.vn
+```
 
-> **Lưu ý:** Nếu cột DNS của tên miền ghi **"Đã mua"** thay vì hiện biểu tượng DNS, tên miền đó có thể đang dùng nameserver ở nơi khác (Cloudflare, nhà cung cấp hosting…). Khi đó phải thêm bản ghi CNAME ở nơi đang quản lý nameserver, thêm trên Tenten sẽ không có tác dụng.
+Trên trang danh sách tên miền của Tenten, cột DNS của `glucankid.vn` ghi **"Đã mua"** chứ không có biểu tượng DNS. Như vậy DNS của tên miền này **không** sửa trực tiếp ở trang danh sách tên miền. Nó do dịch vụ đang chạy trang chính `glucankid.vn` quản lý (nhiều khả năng là gói hosting đi kèm).
 
-**Kiểm tra** (sau vài phút, có khi tới vài giờ):
+Bản ghi phải thêm ở **nơi quản lý DNS** đó, theo một trong các cách sau:
+
+- Vào trang quản trị hosting của `glucankid.vn` (cPanel / DirectAdmin / Plesk…) → mục **Zone Editor / DNS Management**.
+- Hoặc trong id.tenten.vn → **Quản lý dịch vụ** → gói hosting của `glucankid.vn` → quản lý DNS.
+- Nếu không tìm thấy: gửi vé hỗ trợ (**Hỗ trợ – Quản lý vé**) cho Tenten, nhờ thêm bản ghi ở mục 1.2.
+
+### 1.2. Bản ghi cần thêm
+
+| Loại    | Host / Tên | Giá trị              | TTL                  |
+|---------|------------|----------------------|----------------------|
+| `CNAME` | `minigame` | `aklpt123.github.io` | 3600 (hoặc mặc định) |
+
+- Ô **Host** chỉ ghi `minigame`. Một số trang quản trị đòi tên đầy đủ, khi đó ghi `minigame.glucankid.vn.` (có dấu chấm ở cuối).
+- Ô **Giá trị** chỉ ghi `aklpt123.github.io`: không có `https://`, không có tên repo phía sau.
+
+> ⚠️ **Không sửa hay xoá** các bản ghi sẵn có của `glucankid.vn` (bản ghi `@`, `www`, `MX`…). Làm vậy sẽ làm hỏng trang chính và email. Chỉ **thêm mới** đúng một bản ghi `minigame`.
+
+### 1.3. Kiểm tra
+
+Sau vài phút, có khi tới vài giờ:
 
 ```bash
-dig chinhphuc.glucankid.vn +short
+dig minigame.glucankid.vn +short
 # Kết quả đúng sẽ có dòng: aklpt123.github.io.
 ```
 
@@ -35,18 +52,20 @@ dig chinhphuc.glucankid.vn +short
 
 ## Bước 2 — Khai báo tên miền với GitHub
 
-Tạo file tên `CNAME` (viết hoa, không có đuôi) ở thư mục gốc repo. File chỉ có đúng một dòng là subdomain:
+Chỉ làm bước này **sau khi** Bước 1 đã kiểm tra thành công.
+
+Tạo file tên `CNAME` (viết hoa, không có đuôi) ở thư mục gốc repo, chỉ có đúng một dòng:
 
 ```
-chinhphuc.glucankid.vn
+minigame.glucankid.vn
 ```
 
 Sau đó commit và push lên nhánh `main`:
 
 ```bash
-echo "chinhphuc.glucankid.vn" > CNAME
+echo "minigame.glucankid.vn" > CNAME
 git add CNAME
-git commit -m "Add custom domain"
+git commit -m "Add custom domain minigame.glucankid.vn"
 git push origin main
 ```
 
@@ -56,12 +75,14 @@ Repo này build Pages từ nhánh `main`, nên GitHub sẽ tự nhận tên mi�
 
 ## Bước 3 — Chờ và bật HTTPS
 
-1. Chờ DNS cập nhật (thường vài phút, chậm nhất vài giờ).
-2. Sau khi DNS nhận, GitHub tự cấp chứng chỉ SSL, thường mất 15 phút đến 1 tiếng.
-3. Tài khoản admin của repo (`aklpt123`) vào **Settings → Pages** và tích **Enforce HTTPS**.
-4. *(Nên làm)* Tài khoản `aklpt123` vào **Settings tài khoản → Pages → Add a domain** để xác minh (verify) tên miền `glucankid.vn`. Làm vậy để người khác không trỏ được subdomain của bạn vào repo của họ.
+1. Sau khi push file `CNAME`, GitHub tự cấp chứng chỉ SSL cho `minigame.glucankid.vn`, thường mất 15 phút đến 1 tiếng.
+2. Tài khoản admin của repo (`aklpt123`) vào **Settings → Pages** và tích **Enforce HTTPS**.
+3. *(Nên làm)* Tài khoản `aklpt123` vào **Settings tài khoản → Pages → Add a domain** để xác minh (verify) tên miền `glucankid.vn`. Làm vậy để người khác không trỏ được subdomain của bạn vào repo của họ.
 
-**Kiểm tra cuối:** mở `https://chinhphuc.glucankid.vn`. Trang hiện ra và trình duyệt có biểu tượng ổ khoá là xong.
+**Kiểm tra cuối:**
+
+- Mở `https://minigame.glucankid.vn`: minigame hiện ra và trình duyệt có biểu tượng ổ khoá.
+- Mở `https://glucankid.vn`: trang chính vẫn hoạt động bình thường.
 
 ---
 
@@ -69,6 +90,7 @@ Repo này build Pages từ nhánh `main`, nên GitHub sẽ tự nhận tên mi�
 
 | Hiện tượng | Cách xử lý |
 |---|---|
-| Vào subdomain báo 404 của GitHub | Kiểm tra file `CNAME` đã được push và ghi đúng subdomain chưa. |
-| Không vào được subdomain / `dig` không trả kết quả | DNS chưa cập nhật, hoặc thêm bản ghi sai chỗ (xem lưu ý ở Bước 1). |
+| Vào `minigame.glucankid.vn` báo 404 của GitHub | Kiểm tra file `CNAME` đã được push và ghi đúng `minigame.glucankid.vn` chưa. |
+| Không vào được / `dig` không trả kết quả | DNS chưa cập nhật, hoặc bản ghi được thêm sai chỗ (phải thêm ở nơi quản lý nameserver `secureweb.vn`, xem Bước 1.1). |
+| Trang chính `glucankid.vn` bị lỗi sau khi sửa DNS | Có thể đã sửa nhầm bản ghi `@` hoặc `www`. Khôi phục lại giá trị cũ. |
 | Không tích được "Enforce HTTPS" | Chứng chỉ SSL chưa cấp xong, chờ thêm rồi thử lại. |
