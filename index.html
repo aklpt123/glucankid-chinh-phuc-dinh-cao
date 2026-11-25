@@ -1530,6 +1530,74 @@
         let session = null;
         let timerInterval = null;
 
+        /**
+         * 2b. GOOGLE SHEET BACKEND (Google Apps Script Web App)
+         * Dán URL Web App (dạng https://script.google.com/macros/s/.../exec) vào đây.
+         * Để trống = chạy offline như cũ (chỉ lưu trên trình duyệt).
+         * Hướng dẫn: HUONG-DAN-GOOGLE-SHEET.md
+         */
+        const SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbyVfd7Rndcd1sYfYVv9dIMc5r_IwY14trMUAdNQTWtlUeVJGN4iSYlv8a62RgCpW2COnw/exec';
+        const PENDING_FINISH_KEY = 'gk_pending_finish_v1';
+        let pendingFinishMem = null;
+
+        function sheetApiEnabled() {
+            return /^https:\/\/script\.google\.com\/(a\/macros\/[^/]+|macros)\/s\/[^/]+\/exec$/.test(SHEET_API_URL);
+        }
+
+        async function postToSheet(payload) {
+            // Body dạng text/plain để trình duyệt không gửi preflight CORS (Apps Script không hỗ trợ).
+            const res = await fetch(SHEET_API_URL, { method: 'POST', body: JSON.stringify(payload) });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        }
+
+        function escapeHtml(s) {
+            return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
+        function queueFinishToSheet() {
+            if (!sheetApiEnabled() || !session || !session.completed || !session.sheetToken) return;
+            pendingFinishMem = {
+                action: 'finish',
+                phone: session.phone,
+                token: session.sheetToken,
+                total: session.questions.length,
+                durationSec: session.elapsedSec,
+                answers: session.answers.map(a => ({ questionId: a.questionId, chosenIndex: a.chosenIndex, isCorrect: a.isCorrect }))
+            };
+            try { localStorage.setItem(PENDING_FINISH_KEY, JSON.stringify(pendingFinishMem)); } catch (e) {}
+            flushPendingFinish(0);
+        }
+
+        // Gửi kết quả lên Sheet; mất mạng thì thử lại, còn sót thì gửi tiếp ở lần mở trang sau.
+        async function flushPendingFinish(attempt) {
+            if (!sheetApiEnabled()) return;
+            let payload = pendingFinishMem;
+            if (!payload) {
+                try { payload = JSON.parse(localStorage.getItem(PENDING_FINISH_KEY) || 'null'); } catch (e) {}
+            }
+            if (!payload) return;
+
+            const clearPending = () => {
+                pendingFinishMem = null;
+                try { localStorage.removeItem(PENDING_FINISH_KEY); } catch (e) {}
+            };
+
+            try {
+                const res = await postToSheet(payload);
+                if (res.ok) {
+                    clearPending();
+                    if (document.getElementById('screen-victory').classList.contains('active')) renderLeaderboard();
+                } else if (['NOT_FOUND', 'BAD_TOKEN', 'INVALID_RESULT', 'BAD_JSON'].includes(res.error)) {
+                    clearPending(); // lỗi dữ liệu, gửi lại cũng không được
+                } else if (attempt < 3) {
+                    setTimeout(() => flushPendingFinish(attempt + 1), 2000 * (attempt + 1));
+                }
+            } catch (e) {
+                if (attempt < 3) setTimeout(() => flushPendingFinish(attempt + 1), 2000 * (attempt + 1));
+            }
+        }
+
         function initDatabase() {
             try {
                 const q = localStorage.getItem(DB_KEYS.QUESTIONS);
@@ -1539,7 +1607,7 @@
                 db.prizes = p ? JSON.parse(p) : JSON.parse(JSON.stringify(DEFAULT_PRIZES));
 
                 const pl = localStorage.getItem(DB_KEYS.PLAYERS);
-                db.players = pl ? JSON.parse(pl) : JSON.parse(JSON.stringify(SEED_LEADERBOARD));
+                db.players = pl ? JSON.parse(pl) : (sheetApiEnabled() ? [] : JSON.parse(JSON.stringify(SEED_LEADERBOARD)));
 
                 const st = localStorage.getItem(DB_KEYS.SETTINGS);
                 if (st) db.settings = { ...db.settings, ...JSON.parse(st) };
@@ -1549,7 +1617,7 @@
             } catch (e) {
                 db.questions = JSON.parse(JSON.stringify(DEFAULT_QUESTIONS));
                 db.prizes = JSON.parse(JSON.stringify(DEFAULT_PRIZES));
-                db.players = JSON.parse(JSON.stringify(SEED_LEADERBOARD));
+                db.players = sheetApiEnabled() ? [] : JSON.parse(JSON.stringify(SEED_LEADERBOARD));
             }
             persistDatabase();
         }
@@ -2116,8 +2184,11 @@
             return ordered.length > 0 ? ordered : DEFAULT_QUESTIONS;
         }
 
-        function submitRegistration(e) {
+        let registrationInFlight = false;
+
+        async function submitRegistration(e) {
             e.preventDefault();
+            if (registrationInFlight) return;
             sound.init();
 
             const nameInput = document.getElementById('reg-name').value.trim();
@@ -2139,7 +2210,8 @@
                 errP.textContent = 'Số điện thoại không hợp lệ (gồm 10 số, bắt đầu bằng 03, 05, 07, 08, 09).';
                 errP.classList.remove('hidden');
                 valid = false;
-            } else if (db.players.some(p => normalizePhone(p.phone) === phoneInput)) {
+            } else if (db.players.some(p => normalizePhone(p.phone) === phoneInput && p.completed)) {
+                // Chỉ chặn SĐT đã về đích; đăng ký mà chưa về đích thì được chơi lại
                 const errP = document.getElementById('err-phone');
                 errP.textContent = 'Số điện thoại này đã tham gia 01 lượt chơi. Mỗi SĐT chỉ có 01 lượt duy nhất!';
                 errP.classList.remove('hidden');
@@ -2161,6 +2233,41 @@
                 return;
             }
 
+            let sheetToken = null;
+            if (sheetApiEnabled()) {
+                const submitBtn = document.querySelector('#register-form button[type="submit"]');
+                const btnHtml = submitBtn.innerHTML;
+                registrationInFlight = true;
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<span>⏳ ĐANG GỬI THÔNG TIN...</span>';
+                let res = null;
+                try {
+                    res = await postToSheet({ action: 'register', name: nameInput, phone: phoneInput, age: ageRadio.value });
+                } catch (err) {
+                    res = null;
+                } finally {
+                    registrationInFlight = false;
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = btnHtml;
+                }
+
+                if (!res || !res.ok) {
+                    sound.playIncorrect();
+                    const errP = document.getElementById('err-phone');
+                    if (res && res.error === 'DUPLICATE') {
+                        errP.textContent = 'Số điện thoại này đã tham gia 01 lượt chơi. Mỗi SĐT chỉ có 01 lượt duy nhất!';
+                        errP.classList.remove('hidden');
+                    } else if (res && res.error === 'INVALID_PHONE') {
+                        errP.textContent = 'Số điện thoại không hợp lệ (gồm 10 số, bắt đầu bằng 03, 05, 07, 08, 09).';
+                        errP.classList.remove('hidden');
+                    } else {
+                        showToast('⚠️ Chưa gửi được thông tin, bố mẹ kiểm tra mạng và bấm lại nhé!');
+                    }
+                    return;
+                }
+                sheetToken = res.token;
+            }
+
             const now = new Date();
             const regTime = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
             const selectedQuestions = buildSessionQuestions();
@@ -2176,9 +2283,11 @@
                 startTimeMs: Date.now(),
                 elapsedSec: 0,
                 completed: false,
-                prizeWon: null
+                prizeWon: null,
+                sheetToken: sheetToken
             };
 
+            db.players = db.players.filter(p => normalizePhone(p.phone) !== session.phone);
             db.players.unshift({
                 name: session.playerName,
                 phone: session.phone,
@@ -2448,6 +2557,7 @@
             syncPlayerRecordInDb();
             persistDatabase();
             updateHudDisplays();
+            if (session.completed) queueFinishToSheet();
 
             const modal = document.getElementById('modal-feedback');
             const bearStage = document.getElementById('feedback-bear-stage');
@@ -2597,13 +2707,11 @@
             return `${p.slice(0, 3)}***${p.slice(-4)}`;
         }
 
-        function renderLeaderboard() {
-            const tbody = document.getElementById('leaderboard-tbody');
-            tbody.innerHTML = '';
+        let leaderboardRequestId = 0;
 
-            // Rank players with 6/6 correct answers FIRST (sorted by fastest time),
-            // followed by players with fewer correct answers (sorted by score desc, then time asc)
-            const ranked = [...db.players]
+        function rankLocalPlayers() {
+            // 6/6 trước (nhanh nhất lên đầu), sau đó điểm giảm dần, cùng điểm thì nhanh hơn đứng trước
+            return [...db.players]
                 .filter(p => p.completed)
                 .sort((a, b) => {
                     const aPerfect = (a.score === 6 && a.total === 6) || (a.total > 0 && a.score === a.total);
@@ -2612,11 +2720,49 @@
                     if (b.score !== a.score) return b.score - a.score;
                     return a.durationSec - b.durationSec;
                 })
-                .slice(0, 10);
+                .slice(0, 10)
+                .map(p => ({ name: p.name, phone: maskPhone(p.phone), score: p.score, total: p.total, durationSec: p.durationSec }));
+        }
 
-            ranked.forEach((p, idx) => {
-                const isCurrentUser = session && normalizePhone(p.phone) === session.phone;
-                const isPerfect = p.score === p.total;
+        function renderLeaderboardMessage(text) {
+            const tbody = document.getElementById('leaderboard-tbody');
+            tbody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-slate-400 font-bold">${escapeHtml(text)}</td></tr>`;
+        }
+
+        async function renderLeaderboard() {
+            if (!sheetApiEnabled()) {
+                renderLeaderboardRows(rankLocalPlayers());
+                return;
+            }
+            const reqId = ++leaderboardRequestId;
+            if (!document.getElementById('leaderboard-tbody').children.length) {
+                renderLeaderboardMessage('⏳ Đang tải bảng xếp hạng...');
+            }
+            try {
+                const res = await fetch(`${SHEET_API_URL}?action=leaderboard&t=${Date.now()}`);
+                const data = await res.json();
+                if (reqId !== leaderboardRequestId) return;
+                if (!data.ok) throw new Error(data.error || 'API');
+                if (!data.rows.length) {
+                    renderLeaderboardMessage('Chưa có nhà leo núi nào về đích. Bố mẹ sẽ là người đầu tiên!');
+                } else {
+                    renderLeaderboardRows(data.rows);
+                }
+            } catch (err) {
+                if (reqId !== leaderboardRequestId) return;
+                renderLeaderboardMessage('Chưa tải được bảng xếp hạng, bố mẹ thử lại sau nhé.');
+            }
+        }
+
+        // rows: [{ name, phone (đã che), score, total, durationSec }]
+        function renderLeaderboardRows(rows) {
+            const tbody = document.getElementById('leaderboard-tbody');
+            tbody.innerHTML = '';
+            const myMasked = session ? maskPhone(session.phone) : null;
+
+            rows.forEach((p, idx) => {
+                const isCurrentUser = !!session && p.phone === myMasked && p.name === session.playerName;
+                const isPerfect = p.total > 0 && p.score === p.total;
                 const rankBadge = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
                 const tr = document.createElement('tr');
                 tr.className = isCurrentUser ? 'bg-amber-100/80 text-blue-950' : 'text-slate-700';
@@ -2624,14 +2770,14 @@
                     <td class="py-2 px-1.5 font-cartoon font-extrabold">${rankBadge}</td>
                     <td class="py-2 px-1.5">
                         <div class="font-extrabold leading-tight flex items-center flex-wrap gap-1">
-                            <span>${p.name}</span>
+                            <span>${escapeHtml(p.name)}</span>
                             ${isPerfect ? '<span class="text-[9px] bg-amber-400 text-blue-950 px-1.5 py-0.5 rounded-full font-extrabold">★ Đỉnh Cao</span>' : ''}
                             ${isCurrentUser ? '<span class="text-[9px] bg-blue-700 text-white px-1.5 py-0.5 rounded-full">Bạn</span>' : ''}
                         </div>
-                        <div class="text-[10px] text-slate-400">${maskPhone(p.phone)}</div>
+                        <div class="text-[10px] text-slate-400">${escapeHtml(p.phone)}</div>
                     </td>
-                    <td class="py-2 px-1.5 text-center font-cartoon font-extrabold ${isPerfect ? 'text-emerald-600' : 'text-slate-600'}">${p.score}/${p.total}</td>
-                    <td class="py-2 px-1.5 text-right font-cartoon font-extrabold text-sky-700 tabular-nums">${formatDuration(p.durationSec)}</td>
+                    <td class="py-2 px-1.5 text-center font-cartoon font-extrabold ${isPerfect ? 'text-emerald-600' : 'text-slate-600'}">${Number(p.score)}/${Number(p.total)}</td>
+                    <td class="py-2 px-1.5 text-right font-cartoon font-extrabold text-sky-700 tabular-nums">${formatDuration(Number(p.durationSec) || 0)}</td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -3245,6 +3391,7 @@
                 if (session && !session.completed) {
                     startElapsedTimer();
                 }
+                flushPendingFinish(0);
             } catch (err) {
                 console.error(err);
             }
